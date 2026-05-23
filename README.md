@@ -1,4 +1,4 @@
-# Image Potrace to 2-Bit CNC Interpreter
+# Image Potrace to 2-Bit CNC Interpreter Minimalist
 
 This educational, open-source project demonstrates how to drive a CNC machine (like the CostyCNC) directly from vectorized bitmap paths using the **Potrace** algorithm, completely bypassing traditional, heavy G-code text (`G01 X.. Y..`).
 
