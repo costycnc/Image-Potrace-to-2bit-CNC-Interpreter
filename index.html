@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Potrace to 2-Bit CNC Driver</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: #f4f6f9;
+            color: #333;
+        }
+        h2 { margin-bottom: 5px; }
+        .grid-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .box {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        #drop-zone {
+            border: 3px dashed #ccc;
+            padding: 30px;
+            text-align: center;
+            background: #fafafa;
+            cursor: pointer;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            font-weight: bold;
+        }
+        #drop-zone.hover { border-color: #2196F3; background: #e3f2fd; }
+        .btn {
+            background: #2196F3;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .btn:hover { background: #1976D2; }
+        .btn-serial { background: #4CAF50; }
+        .btn-serial:hover { background: #388E3C; }
+        .btn-send { background: #FF9800; width: 100%; margin-top: 10px; }
+        .btn-send:hover { background: #F57C00; }
+        textarea {
+            width: 100%;
+            height: 120px;
+            box-sizing: border-box;
+            font-family: monospace;
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            resize: vertical;
+            background: #fafafa;
+        }
+        img { max-width: 100%; max-height: 200px; display: block; margin: 10px auto; border-radius: 4px; }
+        .status { font-weight: bold; margin-bottom: 10px; padding: 5px; background: #eee; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+    <h2>⚡ Image-Potrace-to-2bit-CNC-Interpreter (Frontend Engine)</h2>
+    <p style="margin-top: 0; color: #666;">Minimalist educational dashboard to stream images directly to stepping hardware without G-Code.</p>
+    <hr>
+
+    <div class="grid-container">
+        
+        <!-- LEFT PANEL: IMAGE LOADING & CONVERSION -->
+        <div class="box">
+            <h3>1. Load Source Image</h3>
+            <div id="drop-zone">
+                Drag & Drop Image Here <br> or Click to Browse <br> (Or Press Ctrl+V anywhere to paste)
+                <input type="file" id="file-input" accept="image/*" style="display:none">
+            </div>
+            <img id="preview" style="display:none;" alt="Preview">
+            
+            <h3>2. Path Optimizer & Encoder Outputs</h3>
+            <label>Extracted Coordinates (From extract() function):</label>
+            <textarea id="txt-coords" readonly placeholder="Calculated continuous [X, Y] vector steps..."></textarea>
+            
+            <label style="margin-top:10px; display:block;">Generated 2-Bit Binary Stream (Hex Format):</label>
+            <textarea id="txt-bytes" readonly placeholder="Resulting compressed 8-bit payloads (4 moves per byte)..."></textarea>
+        </div>
+
+        <!-- RIGHT PANEL: WEB SERIAL HARDWARE INTERFACE -->
+        <div class="box">
+            <h3>3. Hardware Communications</h3>
+            <div class="status" id="serial-status">Serial Connection: 🔴 Disconnected</div>
+            <button class="btn btn-serial" id="btn-connect">Connect CNC Port</button>
+            
+            <h3 style="margin-top: 40px;">4. Transmit Buffer</h3>
+            <p>Ready to push compressed packets directly to your AVR machine's `interpreter.asm` serial stack:</p>
+            <button class="btn btn-send" id="btn-send" disabled>🚀 Stream 2-Bit Byte Array to CNC</button>
+            <div id="tx-progress" style="margin-top: 10px; font-style: italic; color: #555;"></div>
+        </div>
+
+    </div>
+
+    <script>
+        // DOM Handles
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const imgPreview = document.getElementById('preview');
+        const txtCoords = document.getElementById('txt-coords');
+        const txtBytes = document.getElementById('txt-bytes');
+        const btnConnect = document.getElementById('btn-connect');
+        const btnSend = document.getElementById('btn-send');
+        const serialStatus = document.getElementById('serial-status');
+        const txProgress = document.getElementById('tx-progress');
+
+        // Hardware State variables
+        let serialPort = null;
+        let serialWriter = null;
+        let finalBinaryPayload = []; // Holds raw uint8 bytes to stream
+
+        // --- SECTION A: FILE INGESTION (DRAG, DROP, CLICK, PASTE) ---
+        dropZone.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', (e) => handleImageFile(e.target.files[0]));
+
+        // Drag & Drop
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('hover'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('hover'));
+        dropZone.preventDefault = true;
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('hover');
+            if (e.dataTransfer.files.length > 0) handleImageFile(e.dataTransfer.files[0]);
+        });
+
+        // Global Ctrl+V Clip Paste Handler
+        window.addEventListener('paste', (e) => {
+            const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+            for (let item of items) {
+                if (item.type.indexOf('image') === 0) {
+                    handleImageFile(item.getAsFile());
+                    break;
+                }
+            }
+        });
+
+        function handleImageFile(file) {
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                imgPreview.src = event.target.result;
+                imgPreview.style.display = 'block';
+                mockProcessImageAndConvert(); // Execute vector transformation pipeline
+            };
+            reader.readAsDataURL(file);
+        }
+
+        // --- SECTION B: PROCESSING LOGIC PIPELINE (MOCK POTRACE TO 2-BIT) ---
+        function mockProcessImageAndConvert() {
+            // Simulated object structures returning from Potrace
+            // In production, your runtime calls potrace.js here
+            let simulatedPotraceObjects = [
+                [[10,10], [11,10], [11,11], [10,11]], // Object 1: Small square
+                [[20,20], [21,20], [21,21], [20,21]]  // Object 2: Small square
+            ];
+
+            // 1. Run your original CostyCNC optimization function
+            let optimizedPath = extract(simulatedPotraceObjects);
+            txtCoords.value = JSON.stringify(optimizedPath);
+
+            // 2. Encode continuous coordinate tracking into minimalist 2-bit blocks
+            finalBinaryPayload = convertPathTo2BitBytes(optimizedPath);
+            
+            // Format to explicit hexadecimal notation for student visual transparency
+            txtBytes.value = finalBinaryPayload.map(b => '0x' + b.toString(16).toUpperCase().padStart(2, '0')).join(', ');
+            
+            if (serialPort) btnSend.disabled = false;
+        }
+
+        /**
+         * CostyCNC Vector Path Extractor & Joiner Algorithm
+         */
+        function extract(costyx) {
+            let pathx = [[0,0]];
+            let minDiff = Number.MAX_VALUE;
+            let currDiff = 0;
+            let pos0, pat1, pos1;
+            let x, y, x1, y1, x2, y2, p;
+
+            while(costyx.length) {    
+                minDiff = Number.MAX_VALUE;
+                for(let i = 0; i < pathx.length; i = i + 10) {
+                    for(let m = 0; m < costyx.length; m++) {
+                        for(let n = 0; n < costyx[m].length; n++) {
+                            x = pathx[i][0];
+                            y = pathx[i][1];
+                            x1 = costyx[m][n][0];
+                            y1 = costyx[m][n][1];                        
+                            x2 = x - x1;
+                            y2 = y - y1;
+                            currDiff = x2 * x2 + y2 * y2;                      
+                            if(currDiff < minDiff) {
+                                minDiff = currDiff;
+                                pos0 = i;
+                                pat1 = m;
+                                pos1 = n;
+                            } 
+                        }           
+                    }    
+                }
+            
+                p = costyx.splice(pat1, 1)[0];
+                p = p.splice(pos1).concat(p); // Rotate path tracking
+                p.push(p[0]);                 // Explicitly close loop
+                pathx = pathx.slice(0, pos0).concat(p, pathx.slice(pos0 - 1));
+            }
+            return pathx;
+        }
+
+        /**
+         * Converts optimized flat coordinate paths into packed 2-bit command bytes
+         */
+        function convertPathTo2BitBytes(pathx) {
+            let streamBytes = [];
+            let currentByte = 0;
+            let moveCount = 0;
+
+            for (let i = 1; i < pathx.length; i++) {
+                let p1 = pathx[i - 1];
+                let p2 = pathx[i];
+                let moveBits = 0b00;
+
+                // Evaluate coordinate shifts between consecutive points
+                if (p2[0] > p1[0])      moveBits = 0b00; // Move Right (+X)
+                else if (p2[0] < p1[0]) moveBits = 0b01; // Move Left (-X)
+                else if (p2[1] > p1[1]) moveBits = 0b10; // Move Up (+Y)
