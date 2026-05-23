@@ -234,3 +234,62 @@
                 if (p2[0] > p1[0])      moveBits = 0b00; // Move Right (+X)
                 else if (p2[0] < p1[0]) moveBits = 0b01; // Move Left (-X)
                 else if (p2[1] > p1[1]) moveBits = 0b10; // Move Up (+Y)
+
+else if (p2[1] < p1[1]) moveBits = 0b11; // Move Down (-Y)
+currentByte = (currentByte << 2) | moveBits;
+moveCount++;
+if (moveCount === 4) {
+streamBytes.push(currentByte);
+currentByte = 0;
+moveCount = 0;
+}
+}
+if (moveCount > 0) {
+currentByte = currentByte << ((4 - moveCount) * 2);
+streamBytes.push(currentByte);
+}
+return streamBytes;
+}
+// --- SECTION C: WEB SERIAL BUS HARDWARE TRANSACTIONS ---
+btnConnect.addEventListener('click', async () => {
+if (!("serial" in navigator)) {
+alert("Web Serial API is not supported in this browser. Please use Google Chrome or Microsoft Edge.");
+return;
+}
+try {
+// Open browser device selector dialog box
+serialPort = await navigator.serial.requestPort();
+await serialPort.open({ baudRate: 115200 }); // Standard hardware communication speed
+serialWriter = serialPort.writable.getWriter();
+serialStatus.innerHTML = "Serial Connection: 🟢 Connected to CNC Hardware";
+serialStatus.style.background = "#e8f5e9";
+if(finalBinaryPayload.length > 0) btnSend.disabled = false;
+} catch (err) {
+console.error(err);
+serialStatus.innerHTML = "Serial Connection: 🔴 Connection Error";
+serialStatus.style.background = "#ffebee";
+}
+});
+btnSend.addEventListener('click', async () => {
+if (!serialWriter || finalBinaryPayload.length === 0) return;
+try {
+btnSend.disabled = true;
+txProgress.innerText = "Transmitting raw byte packets...";
+// Wrap native Javascript arrays into a typed binary representation for physical hardware transport
+const dataBuffer = new Uint8Array(finalBinaryPayload);
+await serialWriter.write(dataBuffer);
+txProgress.innerText =' Successfully streamed ${dataBuffer.length} packed bytes (equivalent to ${dataBuffer.length * 4} precise linear micro-steps) directly to the AVR hardware stack!';
+btnSend.disabled = false;
+} catch (err) {
+console.error(err);
+txProgress.innerText = "Transmission Error encountered on the write cycle.";
+btnSend.disabled = false;
+}
+});
+
+</script>
+
+</body>
+</html>
+
+
